@@ -41,13 +41,14 @@ RUN pip install --ignore-installed pip
 RUN pip install "airoa_metadata @ git+https://github.com/airoa-org/airoa-metadata.git@development" minio sentry-sdk
 
 # data-backend package (pure Python: GC, upload, state tracking)
-COPY ./data-backend /root/ros2_ws/src/data-backend
+COPY ./yubi-core/data-backend /root/ros2_ws/src/data-backend
 RUN pip install /root/ros2_ws/src/data-backend
 
 # ROS workspace
 RUN mkdir -p /root/ros2_ws/src
-COPY ./yubi-core /root/ros2_ws/src/yubi-core
-COPY ./airoa_data_msgs /root/ros2_ws/src/airoa_data_msgs
+COPY ./yubi-core/yubi-core /root/ros2_ws/src/yubi-core
+COPY ./yubi-core/airoa_data_msgs /root/ros2_ws/src/airoa_data_msgs
+COPY ./airoa_quest/airoa_quest_msgs /root/ros2_ws/src/airoa_quest_msgs
 WORKDIR /root/ros2_ws
 RUN apt-get update -y && \
     rosdep update && \
@@ -58,7 +59,7 @@ RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
     colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     source ./install/setup.bash
 
-COPY ./docker/ros_entrypoint.sh /root/ros_entrypoint.sh
+COPY ./yubi-core/docker/ros_entrypoint.sh /root/ros_entrypoint.sh
 RUN chmod +x /root/ros_entrypoint.sh
 RUN echo "source /root/ros_entrypoint.sh" >> /root/.bashrc
 
