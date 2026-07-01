@@ -213,6 +213,61 @@ class TestSetCallbacks:
         assert handler.metadata.episode.label == "task-1"
 
 
+class TestSetTaskCallback:
+    """Tests for set_task — the operator-selected task stamp."""
+
+    def test_set_task_stores_id_and_instruction(self, handler):
+        req = _make_string_trigger_request(
+            json.dumps({"id": "foldtowel", "instruction": "fold the towel"})
+        )
+        resp = _make_string_trigger_response()
+        handler.set_task_callback(req, resp)
+        assert resp.success is True
+        assert handler.task == {"id": "foldtowel", "instruction": "fold the towel"}
+
+    def test_task_appears_in_metadata_json(self, handler):
+        req = _make_string_trigger_request(json.dumps({"id": "foldtowel"}))
+        resp = _make_string_trigger_response()
+        handler.set_task_callback(req, resp)
+        data = json.loads(handler._metadata_json())
+        assert data["task"] == {"id": "foldtowel"}
+
+    def test_metadata_json_has_no_task_before_set(self, handler):
+        # Default single-task behaviour: meta.json carries no task at all.
+        data = json.loads(handler._metadata_json())
+        assert "task" not in data
+
+    def test_get_verified_metadata_includes_task(self, handler):
+        req = _make_string_trigger_request(json.dumps({"id": "foldtowel"}))
+        handler.set_task_callback(req, _make_string_trigger_response())
+        resp = _make_trigger_response()
+        handler.get_verified_metadata_callback(_make_trigger_request(), resp)
+        assert resp.success is True
+        assert json.loads(resp.message)["task"] == {"id": "foldtowel"}
+
+    def test_empty_id_rejected(self, handler):
+        req = _make_string_trigger_request(json.dumps({"id": "   "}))
+        resp = _make_string_trigger_response()
+        handler.set_task_callback(req, resp)
+        assert resp.success is False
+        assert handler.task is None
+
+    def test_invalid_json_rejected(self, handler):
+        req = _make_string_trigger_request("not json")
+        resp = _make_string_trigger_response()
+        handler.set_task_callback(req, resp)
+        assert resp.success is False
+        assert handler.task is None
+
+    def test_initialize_clears_task(self, handler):
+        handler.set_task_callback(
+            _make_string_trigger_request(json.dumps({"id": "foldtowel"})),
+            _make_string_trigger_response(),
+        )
+        handler.initialize_metadata_callback(_make_trigger_request(), _make_trigger_response())
+        assert handler.task is None
+
+
 # ===================================================================
 # TestAddCallbacks
 # ===================================================================

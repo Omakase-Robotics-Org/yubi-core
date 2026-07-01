@@ -1483,6 +1483,34 @@ class TestStartRecording:
         assert msg == "record_manager service call failed"
 
 
+class TestSetTask:
+    """Tests for ``_set_task()`` — stamps the operator task into metadata."""
+
+    def test_sends_id_and_instruction(self, manager, sample_tasks):
+        manager.tasks = sample_tasks
+        _mock_wait_for_trigger(manager, True)
+
+        assert manager._set_task() is True
+        manager.set_task_client.call_async.assert_called_once()
+        payload = json.loads(manager.set_task_client.call_async.call_args[0][0].message)
+        assert payload == {"id": "task-1", "instruction": "Test Task"}
+
+    def test_falls_back_to_task_id(self, manager):
+        # No nested task.id but a top-level taskId → still stamps something.
+        manager.tasks = {"taskId": "task-9", "task": {}}
+        _mock_wait_for_trigger(manager, True)
+
+        assert manager._set_task() is True
+        payload = json.loads(manager.set_task_client.call_async.call_args[0][0].message)
+        assert payload["id"] == "task-9"
+
+    def test_no_task_id_returns_false_without_call(self, manager):
+        manager.tasks = {"task": {}}
+
+        assert manager._set_task() is False
+        manager.set_task_client.call_async.assert_not_called()
+
+
 # ===================================================================
 # TestConstructorInitialization
 # ===================================================================

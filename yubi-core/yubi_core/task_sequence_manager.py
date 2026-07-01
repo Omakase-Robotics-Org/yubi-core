@@ -227,6 +227,9 @@ class TaskSequenceManager(Node):
         self.set_episode_client = self.create_client(
             StringTrigger, "/metadata_handler/set_episode", callback_group=self.reent_cg
         )
+        self.set_task_client = self.create_client(
+            StringTrigger, "/metadata_handler/set_task", callback_group=self.reent_cg
+        )
         self.add_segment_client = self.create_client(
             StringTrigger, "/metadata_handler/add_segment", callback_group=self.reent_cg
         )
@@ -527,6 +530,28 @@ class TaskSequenceManager(Node):
         future = self.set_episode_uuid_client.call_async(req)
         return self.wait_for_trigger_future_done(future, error_situation="Set episode UUID service call failed")
 
+    def _set_task(self) -> bool:
+        """Stamp the operator-selected task into the recording metadata.
+
+        The task id (routing slug) becomes the ``task=<id>`` segment of the S3
+        object key; the instruction (task name / description) is the free-text
+        language string. Best-effort: a failure here must not abort the episode —
+        the uploader falls back to ``unassigned`` when meta.json carries no task.
+        """
+        task = self.tasks.get("task") or {}
+        task_id = task.get("id") or self.tasks.get("taskId")
+        if not task_id:
+            self.get_logger().warning("No task id available; recording will be uploaded as 'unassigned'")
+            return False
+        payload = {"id": str(task_id)}
+        instruction = task.get("name") or task.get("description")
+        if instruction:
+            payload["instruction"] = str(instruction)
+        req = StringTrigger.Request()
+        req.message = json.dumps(payload)
+        future = self.set_task_client.call_async(req)
+        return self.wait_for_trigger_future_done(future, error_situation="Set task service call failed")
+
     def record_runner(self) -> bool:
         name = (
             self.tasks.get("recordedBy")
@@ -642,6 +667,7 @@ class TaskSequenceManager(Node):
             return False, f"Cannot start recording: {reason}"
         self.record_runner()
         self._set_episode_uuid(self.tasks["episodeId"])
+        self._set_task()
         self.backend.start_episode(self.tasks["episodeId"])
         # Initialize variables for subtasks
         self.has_subtasks_successed = [None for _ in self.tasks["subtasks"]]
