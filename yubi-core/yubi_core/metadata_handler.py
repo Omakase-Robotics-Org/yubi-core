@@ -45,11 +45,19 @@ class MetadataV2Handler(Node):
         self.create_service(StringTrigger, "~/extend_programs", self.extend_programs_callback)
         self.create_service(StringTrigger, "~/add_label", self.add_label_callback)
         self.create_service(StringTrigger, "~/set_episode", self.set_episode_callback)
+        self.create_service(StringTrigger, "~/set_task", self.set_task_callback)
         self.create_service(StringTrigger, "~/add_segment", self.add_segment_callback)
         self.create_service(Trigger, "~/remove_last_segment", self.remove_last_segment_callback)
         self.create_service(StringTrigger, "~/override_last_segment_success", self.override_last_segment_success)
         self.create_service(Trigger, "~/get_verified_metadata", self.get_verified_metadata_callback)
 
+        # Operator-selected task for the current episode. Serialized as a top-level
+        # ``task`` object in meta.json (the V2.0 schema permits extra top-level keys),
+        # so the uploader can stamp ``task=<id>`` into the canonical object key and the
+        # ingest side can route by task without opening the bag. ``id`` is a routing
+        # slug; ``instruction`` is the free-text language string. ``None`` until a task
+        # is set (via ``~/set_task``) → meta.json carries no ``task`` and the uploader
+        # falls back to ``unassigned``. Set/cleared by ``__initialize_metadata``.
         self.metadata = self.__initialize_metadata()
 
         # set up JSON schema validators
@@ -92,7 +100,7 @@ class MetadataV2Handler(Node):
         self.devices_validator = Draft7Validator(self.devices_schema, resolver=RefResolver.from_schema(self.schema))
 
     def initialize_metadata_callback(self, request, response):
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))  # publish current metadata before re-initializing
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))  # publish current metadata before re-initializing
         self.metadata = self.__initialize_metadata()
         response.success = True
         response.message = "Metadata initialized."
@@ -107,11 +115,27 @@ class MetadataV2Handler(Node):
         self.metadata.uuid = episode_uuid
         response.success = True
         response.message = "Episode UUID set in metadata."
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
         return response
 
     def __initialize_metadata(self):
+        # Clear the operator-selected task alongside the metadata so a new episode
+        # never inherits the previous episode's task.
+        self.task = None
         return MetadataV2_0(uuid=f"{uuid_mod.uuid4()}-local")
+
+    def _metadata_json(self) -> str:
+        """Serialize metadata, merging the operator-selected ``task`` (if any).
+
+        ``MetadataV2_0.to_json()`` only emits the schema-defined fields, so the
+        ``task`` object is spliced in as a top-level key here. The V2.0 schema
+        permits extra top-level properties, so this still passes verification.
+        """
+        if self.task is None:
+            return self.metadata.to_json()
+        data = json.loads(self.metadata.to_json())
+        data["task"] = self.task
+        return json.dumps(data, ensure_ascii=False)
 
     def validate_and_respond(
         self,
@@ -144,7 +168,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.files.append(FileV2_0(**request_dict))
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -155,7 +179,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.robot = RobotV2_0(**request_dict)
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -170,7 +194,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.environment = EnvironmentV2_0(**request_dict)
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -181,7 +205,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.runner = RunnerV2_0(**request_dict)
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -192,7 +216,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.devices = [DeviceV2_0(**d) for d in request_dict]
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -209,7 +233,7 @@ class MetadataV2Handler(Node):
             source = SourceV2_0(**source_dict) if isinstance(source_dict, dict) and source_dict else SourceV2_0()
             self.metadata.programs.append(ProgramV2_0(**request_dict, source=source))
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -227,7 +251,7 @@ class MetadataV2Handler(Node):
                 source = SourceV2_0(**source_dict) if isinstance(source_dict, dict) and source_dict else SourceV2_0()
                 self.metadata.programs.append(ProgramV2_0(**p, source=source))
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -240,7 +264,7 @@ class MetadataV2Handler(Node):
         self.metadata.labels.append(label)
         response.success = True
         response.message = "Label added to metadata."
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
         return response
 
     def set_episode_callback(self, request: StringTrigger.Request, response: StringTrigger.Response):
@@ -250,8 +274,46 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.episode = EpisodeV2_0(**request_dict)
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
+        return response
+
+    def set_task_callback(self, request: StringTrigger.Request, response: StringTrigger.Response):
+        """Set the operator-selected task for the current episode.
+
+        Payload is a JSON object ``{"id": "<slug>", "instruction": "<text>"}``.
+        ``id`` is the routing slug stamped into the object key (``task=<id>``);
+        ``instruction`` is the free-text language string (optional). Stored
+        outside the strict V2.0 dataclass and spliced into meta.json by
+        ``_metadata_json``.
+        """
+        try:
+            request_dict = json.loads(request.message)
+        except json.JSONDecodeError:
+            response.success = False
+            response.message = "Task validation error: Invalid JSON format."
+            return response
+
+        if not isinstance(request_dict, dict):
+            response.success = False
+            response.message = "Task validation error: expected a JSON object."
+            return response
+
+        task_id = request_dict.get("id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            response.success = False
+            response.message = "Task validation error: 'id' must be a non-empty string."
+            return response
+
+        task = {"id": task_id.strip()}
+        instruction = request_dict.get("instruction")
+        if isinstance(instruction, str) and instruction.strip():
+            task["instruction"] = instruction.strip()
+        self.task = task
+
+        response.success = True
+        response.message = "Task set in metadata."
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
         return response
 
     def add_segment_callback(self, request: StringTrigger.Request, response: StringTrigger.Response):
@@ -261,7 +323,7 @@ class MetadataV2Handler(Node):
         if request_dict:
             self.metadata.segments.append(SegmentV2_0(**request_dict))
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
         return response
 
@@ -274,7 +336,7 @@ class MetadataV2Handler(Node):
             response.success = False
             response.message = "No segments to remove from metadata."
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
         return response
 
     def override_last_segment_success(self, request: StringTrigger.Request, response: StringTrigger.Response):
@@ -286,11 +348,11 @@ class MetadataV2Handler(Node):
             response.success = False
             response.message = "No segments to update in metadata."
 
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
         return response
 
     def get_verified_metadata_callback(self, request: Trigger.Request, response: Trigger.Response):
-        metadata_str = self.metadata.to_json()
+        metadata_str = self._metadata_json()
         _, response = self.validate_and_respond(
             metadata_str,
             self.schema_validator,
@@ -304,7 +366,7 @@ class MetadataV2Handler(Node):
 
     def process_step(self):
         # publish metadata periodically
-        self.metadata_json_pub.publish(String(data=self.metadata.to_json()))
+        self.metadata_json_pub.publish(String(data=self._metadata_json()))
 
 
 def main():

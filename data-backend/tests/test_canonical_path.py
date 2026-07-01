@@ -9,10 +9,14 @@ from datetime import datetime, timezone
 import pytest
 
 from data_backend.canonical_path import (
+    UNASSIGNED_TASK_VALUE,
     UNKNOWN_PATH_VALUE,
     CanonicalPathFields,
     _normalize_path_value,
+    _normalize_task_id,
 )
+
+_UNSET = object()
 
 
 def _make_meta_json(
@@ -24,37 +28,39 @@ def _make_meta_json(
     robot_type="UMI",
     robot_id="Robot-01",
     start_time=1794572400.123,
+    task=_UNSET,
 ) -> str:
-    return json.dumps(
-        {
-            "$schema": "https://example.com/v2_0.json",
-            "schema_version": "2.0",
-            "uuid": uuid,
-            "robot": {
-                "type": robot_type,
-                "id": robot_id,
-                "uri": None,
-                "checksum": None,
-            },
-            "files": [{"type": "mcap", "name": "recording_0.mcap", "checksum": None}],
-            "environment": {"type": "real_world", "site": site, "location": location},
-            "runner": {
-                "type": "operator",
-                "organization": organization,
-                "name": "op-1",
-            },
-            "devices": [],
-            "programs": [],
-            "episode": {
-                "start_time": start_time,
-                "end_time": start_time + 1.0,
-                "success": True,
-                "label": "ep-a",
-            },
-            "labels": ["ep-a"],
-            "segments": [],
-        }
-    )
+    doc = {
+        "$schema": "https://example.com/v2_0.json",
+        "schema_version": "2.0",
+        "uuid": uuid,
+        "robot": {
+            "type": robot_type,
+            "id": robot_id,
+            "uri": None,
+            "checksum": None,
+        },
+        "files": [{"type": "mcap", "name": "recording_0.mcap", "checksum": None}],
+        "environment": {"type": "real_world", "site": site, "location": location},
+        "runner": {
+            "type": "operator",
+            "organization": organization,
+            "name": "op-1",
+        },
+        "devices": [],
+        "programs": [],
+        "episode": {
+            "start_time": start_time,
+            "end_time": start_time + 1.0,
+            "success": True,
+            "label": "ep-a",
+        },
+        "labels": ["ep-a"],
+        "segments": [],
+    }
+    if task is not _UNSET:
+        doc["task"] = task
+    return json.dumps(doc)
 
 
 class TestCanonicalPrefix:
@@ -72,11 +78,34 @@ class TestCanonicalPrefix:
         assert fields.robot_type == "UMI"
         assert fields.robot_id == "Robot-01"
         assert fields.timestamp_rfc3339 == "2026-11-12T10:00:00.123Z"
+        assert fields.task_id == UNASSIGNED_TASK_VALUE
         assert fields.canonical_prefix == (
             "org=airoa-lab/site=tokyo-hq/location=floor-2/date=2026-11-12/"
-            "robot_type=umi/robot_id=robot-01/ts=2026-11-12T10:00:00.123Z/"
-            "uuid=550e8400-e29b-41d4-a716-446655440000"
+            "task=unassigned/robot_type=umi/robot_id=robot-01/"
+            "ts=2026-11-12T10:00:00.123Z/uuid=550e8400-e29b-41d4-a716-446655440000"
         )
+
+    def test_task_segment_from_meta(self):
+        started_at = datetime(2026, 11, 12, 10, 0, 0, 123000, tzinfo=timezone.utc)
+        fields = CanonicalPathFields.from_meta_json(
+            _make_meta_json(
+                start_time=started_at.timestamp(),
+                task={"id": "foldtowel", "instruction": "fold the towel"},
+            )
+        )
+        assert fields.task_id == "foldtowel"
+        assert "date=2026-11-12/task=foldtowel/robot_type=umi/" in fields.canonical_prefix
+
+    def test_task_absent_falls_back_to_unassigned(self):
+        # No `task` key at all in meta.json (current single-task behaviour).
+        fields = CanonicalPathFields.from_meta_json(_make_meta_json())
+        assert fields.task_id == UNASSIGNED_TASK_VALUE
+        assert "/task=unassigned/" in fields.canonical_prefix
+
+    def test_task_slug_normalized_in_key(self):
+        # A non-slug id from the app is coerced to a routable slug in the key.
+        fields = CanonicalPathFields.from_meta_json(_make_meta_json(task={"id": "Fold Towel!"}))
+        assert "/task=foldtowel/" in fields.canonical_prefix
 
     def test_empty_fields_fall_back_to_unknown(self):
         fields = CanonicalPathFields.from_meta_json(
@@ -92,8 +121,8 @@ class TestCanonicalPrefix:
 
         assert fields.canonical_prefix == (
             "org=unknown/site=unknown/location=unknown/date=1970-01-01/"
-            "robot_type=unknown/robot_id=unknown/ts=1970-01-01T00:00:00.000Z/"
-            "uuid=550e8400-e29b-41d4-a716-446655440000"
+            "task=unassigned/robot_type=unknown/robot_id=unknown/"
+            "ts=1970-01-01T00:00:00.000Z/uuid=550e8400-e29b-41d4-a716-446655440000"
         )
 
     def test_uppercase_uuid_lowered(self):
@@ -182,3 +211,32 @@ class TestNormalizePathValue:
 
     def test_dot_only_returns_unknown(self):
         assert _normalize_path_value("...") == UNKNOWN_PATH_VALUE
+
+
+class TestNormalizeTaskId:
+    """Task ids must become a routable slug (``[a-z0-9]+``) or ``unassigned``."""
+
+    def test_already_slug_unchanged(self):
+        assert _normalize_task_id("foldtowel") == "foldtowel"
+
+    def test_lowercased(self):
+        assert _normalize_task_id("FoldTowel") == "foldtowel"
+
+    def test_non_alnum_stripped(self):
+        assert _normalize_task_id("fold-towel_v2") == "foldtowelv2"
+
+    def test_spaces_and_punct_stripped(self):
+        assert _normalize_task_id("Fold the towel!") == "foldthetowel"
+
+    def test_none_returns_unassigned(self):
+        assert _normalize_task_id(None) == UNASSIGNED_TASK_VALUE
+
+    def test_empty_returns_unassigned(self):
+        assert _normalize_task_id("") == UNASSIGNED_TASK_VALUE
+
+    def test_all_punct_returns_unassigned(self):
+        assert _normalize_task_id("---!!!") == UNASSIGNED_TASK_VALUE
+
+    def test_unicode_nfkc(self):
+        # fullwidth digits/letters fold to ascii alnum
+        assert _normalize_task_id("Ａ１") == "a1"
